@@ -15,13 +15,13 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from main.views import login, register, ProjectViewSet
+from main.views import login, register, logout, ProjectViewSet
 from rest_framework import permissions
 from drf_yasg.views import get_schema_view
 from drf_yasg import openapi
 from django.urls import path, include
 from rest_framework.routers import DefaultRouter
-
+from security.views import  CustomTokenRefreshView
 
 router = DefaultRouter()
 router.register(r'projects', ProjectViewSet, basename='projects')
@@ -41,8 +41,12 @@ urlpatterns = [
     # auth
     path('api/register/', register),
     path('api/login/', login),
+    path('api/logout/', logout),
 
-    # projects CRUD
+    # refresh
+    path('api/token/refresh/', CustomTokenRefreshView.as_view()),
+
+    # projects
     path('api/', include(router.urls)),
 
     # admin

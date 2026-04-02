@@ -22,6 +22,15 @@ class RegisterSerializer(serializers.ModelSerializer):
         user.save()
         return user
     
+    def validate_email(self, value):
+        if User.objects.filter(email=value).exists():
+            raise serializers.ValidationError("Email уже зарегистрирован")
+        return value
+
+    def validate_user_name(self, value):
+        if User.objects.filter(user_name=value).exists():
+            raise serializers.ValidationError("Имя пользователя уже занято")
+        return value
 
 class ProjectSerializer(serializers.ModelSerializer):
     class Meta:

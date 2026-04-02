@@ -5,6 +5,7 @@ from rest_framework.viewsets import ModelViewSet
 from .serializers import RegisterSerializer, ProjectSerializer
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
+from django.conf import settings
 
 from rest_framework.decorators import api_view, permission_classes
 from rest_framework.permissions import IsAuthenticated
@@ -36,43 +37,74 @@ def authenticate_user(login: str, password: str):
 
 @api_view(['POST'])
 def register(request):
-    print("Incoming data:", request.data)
     serializer = RegisterSerializer(data=request.data)
+
     if serializer.is_valid():
         user = serializer.save()
-        return Response({
+
+        refresh = RefreshToken.for_user(user)
+        access = str(refresh.access_token)
+
+        response = Response({
             "user": {
                 "id": str(user.user_id),
                 "user_name": user.user_name,
                 "email": user.email
-            }
+            },
+            "access": access
         }, status=201)
-    print("Errors:", serializer.errors)
-    return Response(serializer.errors, status=400)
+
+        # refresh -> cookie
+        response.set_cookie(
+            key=settings.SIMPLE_JWT['AUTH_COOKIE'],
+            value=str(refresh),
+            httponly=True,
+            secure=False,  # True в проде не забыть
+            samesite='Lax',
+            path='/api/token/refresh/'
+        )
+
+        return response
+
+    return Response({"errors": serializer.errors}, status=400)
 
 
 @api_view(['POST'])
 def login(request):
-    login_input = request.data.get('login')  # поле может быть user_name или email
+    login_input = request.data.get('login')
     password = request.data.get('password')
-
-    if not login_input or not password:
-        return Response({'error': 'Login and password are required'}, status=400)
 
     user = authenticate_user(login_input, password)
 
     if user is None:
-        return Response({'error': 'Invalid credentials'}, status=400)
+        return Response({
+            "errors": {
+                "non_field_errors": ["Неверный логин или пароль"]
+            }
+        }, status=400)
 
-    # создаём JWT
     refresh = RefreshToken.for_user(user)
+    access = str(refresh.access_token)
 
-    return Response({
-        'access': str(refresh.access_token),
-        'refresh': str(refresh),
-        'user_name': user.user_name,
-        'email': user.email,
+    response = Response({
+        "access": access,
+        "user": {
+            "user_name": user.user_name,
+            "email": user.email,
+        }
     })
+
+    # refresh -> cookie
+    response.set_cookie(
+        key=settings.SIMPLE_JWT['AUTH_COOKIE'],
+        value=str(refresh),
+        httponly=True,
+        secure=False,  # True в проде не забыть
+        samesite='Lax',
+        path='/api/token/refresh/'
+    )
+
+    return response
 
 
 class ProjectViewSet(ModelViewSet):
@@ -91,6 +123,12 @@ class ProjectViewSet(ModelViewSet):
 @permission_classes([IsAuthenticated])
 def profile(request):
     return Response({
-        'username': request.user.username,
+        'username': request.user.user_name,
         'email': request.user.email
     })
+
+@api_view(['POST'])
+def logout(request):
+    response = Response({"message": "Logged out"})
+    response.delete_cookie(settings.SIMPLE_JWT['AUTH_COOKIE'])
+    return response

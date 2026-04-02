@@ -25,7 +25,7 @@ SECRET_KEY = 'django-insecure-s_qy^ri84%7yh9u242#9bhpy_7^li=mj4f=y_9r-^_#h_lp&d_
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = True
 
-ALLOWED_HOSTS = ['192.168.10.234']
+ALLOWED_HOSTS =  ['192.168.10.234', '127.0.0.1', 'localhost']
 
 
 # Application definition
@@ -37,9 +37,10 @@ INSTALLED_APPS = [
     'django.contrib.sessions',
     'django.contrib.messages',
     'django.contrib.staticfiles',
-    'rest_framework',
     'corsheaders',
+    'rest_framework',
     'main',
+    'security',
 ]
 
 from datetime import timedelta
@@ -48,10 +49,21 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': (
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ),
+    'DEFAULT_THROTTLE_CLASSES': [
+        'rest_framework.throttling.UserRateThrottle',
+    ],
+    'DEFAULT_THROTTLE_RATES': {
+        'user': '100/min',
+    }
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=60),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=10),
+    'AUTH_COOKIE': 'refresh_token',
+    'AUTH_COOKIE_HTTP_ONLY': True,
+    'AUTH_COOKIE_SECURE': False,  # True в проде
+    'AUTH_COOKIE_PATH': '/', 
+    'AUTH_COOKIE_SAMESITE': 'Lax',
 }
 
 
@@ -67,14 +79,15 @@ SWAGGER_SETTINGS = {
 }
 
 MIDDLEWARE = [
+    'corsheaders.middleware.CorsMiddleware',
+    'django.middleware.common.CommonMiddleware',
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
-    'django.middleware.common.CommonMiddleware',
     'django.middleware.csrf.CsrfViewMiddleware',
     'django.contrib.auth.middleware.AuthenticationMiddleware',
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
-    'corsheaders.middleware.CorsMiddleware',
+
 ]
 
 ROOT_URLCONF = 'sortirovschick.urls'
@@ -127,6 +140,12 @@ AUTH_PASSWORD_VALIDATORS = [
     },
 ]
 
+CSRF_TRUSTED_ORIGINS = [
+    "http://localhost:8080",
+    "http://192.168.10.234:8080",
+]
+
+CSRF_COOKIE_SECURE = False  # True в проде
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.1/topics/i18n/
@@ -139,7 +158,18 @@ USE_I18N = True
 
 USE_TZ = True
 
-CORS_ALLOW_ALL_ORIGINS = True
+CORS_ALLOW_ALL_ORIGINS = False
+
+CORS_ALLOW_ALL_HEADERS = True
+CORS_ALLOW_ALL_METHODS = True
+
+CORS_PREFLIGHT_MAX_AGE = 86400
+
+CORS_ALLOWED_ORIGINS = [
+    "http://localhost:8080",
+    "http://192.168.10.234:8080",
+]
+CORS_ALLOW_CREDENTIALS = True
 
 AUTH_USER_MODEL = 'main.User'
 
