@@ -59,7 +59,7 @@ def register(request):
             key=settings.SIMPLE_JWT['AUTH_COOKIE'],
             value=str(refresh),
             httponly=True,
-            secure=False,  # True в проде не забыть
+            secure=True,  # True в проде не забыть
             samesite='Lax',
             path='/'
         )
@@ -99,7 +99,7 @@ def login(request):
         key=settings.SIMPLE_JWT['AUTH_COOKIE'],
         value=str(refresh),
         httponly=True,
-        secure=False,  # True в проде не забыть
+        secure=True,  # True в проде не забыть
         samesite='Lax',
         # path='/api/token/refresh/'
         path='/'

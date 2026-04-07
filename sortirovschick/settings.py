@@ -64,7 +64,7 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'AUTH_COOKIE': 'refresh_token',
     'AUTH_COOKIE_HTTP_ONLY': True,
-    'AUTH_COOKIE_SECURE': False,  # True в проде
+    'AUTH_COOKIE_SECURE': True,  # True в проде
     'AUTH_COOKIE_PATH': '/', 
     'AUTH_COOKIE_SAMESITE': 'Lax',
 }
@@ -152,7 +152,7 @@ CSRF_TRUSTED_ORIGINS = [
     "http://192.168.10.234:8080",
 ]
 
-CSRF_COOKIE_SECURE = False  # True в проде
+CSRF_COOKIE_SECURE = True  # True в проде
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.1/topics/i18n/
