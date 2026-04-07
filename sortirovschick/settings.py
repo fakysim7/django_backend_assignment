@@ -26,7 +26,7 @@ SECRET_KEY = config('SECRET_KEY')
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS =  ['192.168.10.234', '127.0.0.1', 'localhost', '192.168.1.3']
+ALLOWED_HOSTS =  ['AoRtech.pythonanywhere.com','192.168.10.234', '127.0.0.1', 'localhost', '192.168.1.3']
 
 
 # Application definition
@@ -60,7 +60,7 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=20),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=1),
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'AUTH_COOKIE': 'refresh_token',
     'AUTH_COOKIE_HTTP_ONLY': True,
@@ -183,7 +183,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080",
     "http://192.168.10.234:8080",
     "http://192.168.0.106:8000",
-    "AoRtech.pythonanywhere.com"
+    "https://assignment-builder-front.vercel.app",
 ]
 CORS_ALLOW_CREDENTIALS = True
 
