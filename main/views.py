@@ -2,7 +2,7 @@ from rest_framework.decorators import api_view
 from rest_framework.response import Response
 from rest_framework import status
 from rest_framework.viewsets import ModelViewSet
-from .serializers import RegisterSerializer, ProjectSerializer
+from .serializers import RegisterSerializer
 from django.contrib.auth import authenticate
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.conf import settings
@@ -61,7 +61,7 @@ def register(request):
             httponly=True,
             secure=False,  # True в проде не забыть
             samesite='Lax',
-            path='/api/token/refresh/'
+            path='/'
         )
 
         return response
@@ -101,23 +101,12 @@ def login(request):
         httponly=True,
         secure=False,  # True в проде не забыть
         samesite='Lax',
-        path='/api/token/refresh/'
+        # path='/api/token/refresh/'
+        path='/'
     )
 
     return response
 
-
-class ProjectViewSet(ModelViewSet):
-    serializer_class = ProjectSerializer
-    permission_classes = [IsAuthenticated]
-
-    def get_queryset(self):
-        # пользователь видит только свои проекты
-        return Projects.objects.filter(user=self.request.user)
-
-    def perform_create(self, serializer):
-        # автоматически привязываем пользователя
-        serializer.save(user=self.request.user)
 
 @api_view(['GET'])
 @permission_classes([IsAuthenticated])

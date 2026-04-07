@@ -37,10 +37,15 @@ class User(AbstractUser):
     
     
 class Projects(models.Model):
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
     user = models.ForeignKey(User, on_delete=models.CASCADE)
     name = models.CharField(max_length=100)
     description = models.TextField(blank=True)
-    work_type = models.CharField(max_length=10)
-    date = models.DateTimeField(auto_now=True)
+    type = models.CharField(max_length=10) 
     status = models.CharField(max_length=15)
-    data = models.JSONField()
+    updatedAt = models.DateTimeField(auto_now=True)  
+    blocks = models.JSONField(default=list)  
+    image = models.ImageField(upload_to='projects/', 
+                                null=True,      
+                                blank=True,     
+                                default=None )

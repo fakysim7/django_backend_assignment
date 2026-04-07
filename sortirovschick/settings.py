@@ -11,7 +11,8 @@ https://docs.djangoproject.com/en/5.1/ref/settings/
 """
 
 from pathlib import Path
-
+from decouple import config
+import os
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
 
@@ -20,12 +21,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 # See https://docs.djangoproject.com/en/5.1/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-s_qy^ri84%7yh9u242#9bhpy_7^li=mj4f=y_9r-^_#h_lp&d_'
+SECRET_KEY = config('SECRET_KEY')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = config('DEBUG', default=False, cast=bool)
 
-ALLOWED_HOSTS =  ['192.168.10.234', '127.0.0.1', 'localhost']
+ALLOWED_HOSTS =  ['192.168.10.234', '127.0.0.1', 'localhost', '192.168.1.3']
 
 
 # Application definition
@@ -41,6 +42,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'main',
     'security',
+    'projects',
 ]
 
 from datetime import timedelta
@@ -58,7 +60,8 @@ REST_FRAMEWORK = {
 }
 
 SIMPLE_JWT = {
-    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=10),
+    'ACCESS_TOKEN_LIFETIME': timedelta(minutes=20),
+    'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'AUTH_COOKIE': 'refresh_token',
     'AUTH_COOKIE_HTTP_ONLY': True,
     'AUTH_COOKIE_SECURE': False,  # True в проде
@@ -116,8 +119,12 @@ WSGI_APPLICATION = 'sortirovschick.wsgi.application'
 
 DATABASES = {
     'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+        'ENGINE': 'django.db.backends.postgresql',
+        'NAME': config('DB_NAME'),
+        'USER': config('DB_USER'),
+        'PASSWORD': config('DB_PASSWORD'),
+        'HOST': config('DB_HOST'),
+        'PORT': config('DB_PORT'),
     }
 }
 
@@ -168,8 +175,12 @@ CORS_PREFLIGHT_MAX_AGE = 86400
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080",
     "http://192.168.10.234:8080",
+    "http://192.168.0.106:8000",
 ]
 CORS_ALLOW_CREDENTIALS = True
+
+MEDIA_URL = '/media/'
+MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
 
 AUTH_USER_MODEL = 'main.User'
 

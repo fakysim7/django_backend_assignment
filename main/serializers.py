@@ -1,5 +1,5 @@
 from rest_framework import serializers
-from .models import User, Projects
+from .models import User
 
 class RegisterSerializer(serializers.ModelSerializer):
     password = serializers.CharField(write_only=True)
@@ -32,8 +32,3 @@ class RegisterSerializer(serializers.ModelSerializer):
             raise serializers.ValidationError("Имя пользователя уже занято")
         return value
 
-class ProjectSerializer(serializers.ModelSerializer):
-    class Meta:
-        model = Projects
-        fields = '__all__'
-        read_only_fields = ['user']
