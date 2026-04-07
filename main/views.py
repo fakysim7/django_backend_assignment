@@ -60,7 +60,7 @@ def register(request):
             value=str(refresh),
             httponly=True,
             secure=True,  # True в проде не забыть
-            samesite='Lax',
+            samesite='None',
             path='/'
         )
 
@@ -100,7 +100,7 @@ def login(request):
         value=str(refresh),
         httponly=True,
         secure=True,  # True в проде не забыть
-        samesite='Lax',
+        samesite='None',
         # path='/api/token/refresh/'
         path='/'
     )
