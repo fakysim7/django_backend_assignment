@@ -176,6 +176,7 @@ CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080",
     "http://192.168.10.234:8080",
     "http://192.168.0.106:8000",
+    "AoRtech.pythonanywhere.com"
 ]
 CORS_ALLOW_CREDENTIALS = True
 
