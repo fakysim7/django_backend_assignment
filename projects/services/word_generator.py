@@ -29,7 +29,7 @@ logger = logging.getLogger(__name__)
 # ─────────────────────────────────────────────
 
 def _setup_gost_styles(doc: Document):
-    """Настройка глобальных стилей документа."""
+    """Настройка глобальных стилей документа по ГОСТ 7.32 / СТП 20-04-2008."""
     style = doc.styles["Normal"]
     style.font.name = "Times New Roman"
     style.font.size = Pt(14)
@@ -37,21 +37,24 @@ def _setup_gost_styles(doc: Document):
     pf = style.paragraph_format
     pf.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
     pf.first_line_indent = Cm(1.25)
-    pf.space_after = Pt(0)
-    pf.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+    pf.space_before      = Pt(0)
+    pf.space_after       = Pt(0)
+    pf.alignment         = WD_ALIGN_PARAGRAPH.JUSTIFY
 
+    sizes = {1: Pt(16), 2: Pt(14), 3: Pt(14)}
     for i in range(1, 4):
         h_style = doc.styles[f"Heading {i}"]
-        h_style.font.name = "Times New Roman"
-        h_style.font.bold = True
-        h_style.font.color.rgb = RGBColor(0, 0, 0)
-        h_style.font.size = Pt(16 if i == 1 else 14)
+        h_style.font.name        = "Times New Roman"
+        h_style.font.bold        = True
+        h_style.font.color.rgb   = RGBColor(0, 0, 0)
+        h_style.font.size        = sizes[i]
         h_pf = h_style.paragraph_format
-        h_pf.alignment = WD_ALIGN_PARAGRAPH.LEFT
-        h_pf.first_line_indent = Cm(1.25)
-        h_pf.space_before = Pt(12)
-        h_pf.space_after = Pt(6)
-        h_pf.keep_with_next = True
+        h_pf.line_spacing_rule   = WD_LINE_SPACING.ONE_POINT_FIVE  
+        h_pf.alignment           = WD_ALIGN_PARAGRAPH.LEFT
+        h_pf.first_line_indent   = Cm(1.25)
+        h_pf.space_before        = Pt(12)
+        h_pf.space_after         = Pt(6)
+        h_pf.keep_with_next      = True
 
 
 # ─────────────────────────────────────────────
@@ -240,7 +243,7 @@ def _render_title_page(doc: Document, content: dict):
     p = top.paragraphs[0]
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.paragraph_format.space_after = Pt(0)
-    _set_font(p.add_run(university.upper()), 12, bold=True)
+    _set_font(p.add_run(f"МИНИСТЕРСТВО ОБРАЗОВАНИЯ РЕСПУБЛИКИ БЕЛАРУСЬ\n УО «{university.upper()}»"), 12, bold=True)
 
     p2 = top.add_paragraph()
     p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
@@ -303,7 +306,7 @@ def _render_title_page(doc: Document, content: dict):
     p_sig2 = row2[1].paragraphs[0]
     p_sig2.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p_sig2.paragraph_format.space_before = Pt(18) # Сдвиг вниз
-    _set_font(p_sig2.add_run("(подпись) (оценка)\n(дата)"), 8)
+    _set_font(p_sig2.add_run("(подпись) (оценка)\n             (дата)"), 8)
     
     # Ячейка 3: ФИО
     p_name2 = row2[2].paragraphs[0]
@@ -386,6 +389,8 @@ def _render_image(doc: Document, content: dict, img_counter: list):
         cap_p = doc.add_paragraph(f"Рисунок {num} — {caption}")
         cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         cap_p.paragraph_format.first_line_indent = Cm(0)
+        cap_p.paragraph_format.space_before = Pt(6)  # ← добавьте
+        cap_p.paragraph_format.space_after  = Pt(12)
         _set_font(cap_p.runs[0], 12, italic=True)
 
 
