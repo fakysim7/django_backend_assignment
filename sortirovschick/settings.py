@@ -43,6 +43,11 @@ INSTALLED_APPS = [
     'main',
     'security',
     'projects',
+    'ai_pipeline',
+    'platform_admin',
+    'support',
+    'notifications',
+    'storage',
 ]
 
 from datetime import timedelta
@@ -56,6 +61,7 @@ REST_FRAMEWORK = {
     ],
     'DEFAULT_THROTTLE_RATES': {
         'user': '100/min',
+        'admin_login': '5/min',
     }
 }
 
@@ -64,9 +70,12 @@ SIMPLE_JWT = {
     'REFRESH_TOKEN_LIFETIME': timedelta(days=7),
     'AUTH_COOKIE': 'refresh_token',
     'AUTH_COOKIE_HTTP_ONLY': True,
-    'AUTH_COOKIE_SECURE': True,  # True в проде
-    'AUTH_COOKIE_PATH': '/', 
-    'AUTH_COOKIE_SAMESITE': 'None',
+    'AUTH_COOKIE_SECURE': config('AUTH_COOKIE_SECURE', default=not DEBUG, cast=bool),
+    'AUTH_COOKIE_PATH': '/',
+    'AUTH_COOKIE_SAMESITE': config(
+        'AUTH_COOKIE_SAMESITE',
+        default='None' if not DEBUG else 'Lax',
+    ),
 }
 
 
@@ -155,11 +164,28 @@ AUTH_PASSWORD_VALIDATORS = [
 ]
 
 CSRF_TRUSTED_ORIGINS = [
-    "http://localhost:8080",
-    "http://192.168.10.234:8080",
+    "http://192.168.1.12:8080",
+    "https://finepapers.online",
+    "https://assignment-builder-front.vercel.app",
 ]
 
-CSRF_COOKIE_SECURE = True  # True в проде
+CSRF_COOKIE_SECURE = config('CSRF_COOKIE_SECURE', default=not DEBUG, cast=bool)
+CSRF_COOKIE_SAMESITE = config(
+    'CSRF_COOKIE_SAMESITE',
+    default='None' if not DEBUG else 'Lax',
+)
+
+PLATFORM_ADMIN_SESSION_COOKIE_NAME = 'finepapers_admin_session'
+PLATFORM_ADMIN_SESSION_COOKIE_SECURE = config(
+    'PLATFORM_ADMIN_SESSION_COOKIE_SECURE',
+    default=not DEBUG,
+    cast=bool,
+)
+PLATFORM_ADMIN_SESSION_COOKIE_SAMESITE = config(
+    'PLATFORM_ADMIN_SESSION_COOKIE_SAMESITE',
+    default='None' if not DEBUG else 'Lax',
+)
+PLATFORM_ADMIN_SESSION_AGE = 8 * 60 * 60
 
 # Internationalization
 # https://docs.djangoproject.com/en/5.1/topics/i18n/
@@ -181,16 +207,63 @@ CORS_PREFLIGHT_MAX_AGE = 86400
 
 CORS_ALLOWED_ORIGINS = [
     "http://localhost:8080",
-    "http://192.168.10.234:8080",
-    "http://192.168.0.106:8000",
+    "http://192.168.1.12:8080",
+    "https://finepapers.online",
     "https://assignment-builder-front.vercel.app",
 ]
 CORS_ALLOW_CREDENTIALS = True
 
 MEDIA_URL = '/media/'
 MEDIA_ROOT = os.path.join(BASE_DIR, 'media')
+STORAGE_PROVIDER = config(
+    'STORAGE_PROVIDER',
+    default='local' if DEBUG else 'tigris',
+)
+STORAGE_ALLOW_LOCAL_FALLBACK = config(
+    'STORAGE_ALLOW_LOCAL_FALLBACK',
+    default=False,
+    cast=bool,
+)
+STORAGE_LOCAL_ROOT = config(
+    'STORAGE_LOCAL_ROOT',
+    default=str(BASE_DIR / 'private_uploads' / 'storage'),
+)
+STORAGE_SIGNED_URL_TTL = config(
+    'STORAGE_SIGNED_URL_TTL',
+    default=600,
+    cast=int,
+)
+STORAGE_MAX_FILE_SIZE = config(
+    'STORAGE_MAX_FILE_SIZE',
+    default=52_428_800,
+    cast=int,
+)
+TIGRIS_ACCESS_KEY_ID = config('TIGRIS_ACCESS_KEY_ID', default='')
+TIGRIS_SECRET_ACCESS_KEY = config('TIGRIS_SECRET_ACCESS_KEY', default='')
+TIGRIS_BUCKET = config('TIGRIS_BUCKET', default='finepapers-storage')
+TIGRIS_ENDPOINT = config('TIGRIS_ENDPOINT', default='https://t3.storage.dev')
+TIGRIS_REGION = config('TIGRIS_REGION', default='auto')
+STORAGES = {
+    'default': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+    },
+    'staticfiles': {
+        'BACKEND': 'django.contrib.staticfiles.storage.StaticFilesStorage',
+    },
+    'support_attachments': {
+        'BACKEND': 'django.core.files.storage.FileSystemStorage',
+        'OPTIONS': {
+            'location': BASE_DIR / 'private_uploads' / 'support',
+        },
+    },
+}
 
 AUTH_USER_MODEL = 'main.User'
+
+GOOGLE_OAUTH_CLIENT_ID = config('CLIENT_ID')
+GOOGLE_OAUTH_CLIENT_SECRET = config('CLIENT_SECRET')
+
+GOOGLE_OAUTH_REDIRECT_URI = "postmessage"
 
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.1/howto/static-files/
@@ -203,3 +276,33 @@ STATIC_URL = 'static/'
 DEFAULT_AUTO_FIELD = 'django.db.models.BigAutoField'
 
 SECURE_PROXY_SSL_HEADER = ('HTTP_X_FORWARDED_PROTO', 'https')
+
+OPENROUTER_API_KEY = config('OPENROUTER_API_KEY', default='')
+OPENROUTER_API_URL = config(
+    'OPENROUTER_API_URL',
+    default='https://openrouter.ai/api/v1/chat/completions',
+)
+OPENROUTER_DEFAULT_MODEL = config('OPENROUTER_DEFAULT_MODEL', default='')
+OPENROUTER_MODEL_ROUTING_JSON = config('OPENROUTER_MODEL_ROUTING_JSON', default='')
+AI_OPERATION_COSTS_JSON = config('AI_OPERATION_COSTS_JSON', default='')
+OPENROUTER_SITE_URL = config('OPENROUTER_SITE_URL', default='')
+OPENROUTER_APP_NAME = config('OPENROUTER_APP_NAME', default='Fine PAPERs')
+OPENROUTER_TIMEOUT_SECONDS = config('OPENROUTER_TIMEOUT_SECONDS', default=90, cast=int)
+OPENROUTER_MAX_OUTPUT_TOKENS = config(
+    'OPENROUTER_MAX_OUTPUT_TOKENS',
+    default=4000,
+    cast=int,
+)
+AI_MAX_CONTEXT_CHARS = config('AI_MAX_CONTEXT_CHARS', default=16000, cast=int)
+AI_PROVIDER_RETRY_ATTEMPTS = config(
+    'AI_PROVIDER_RETRY_ATTEMPTS', default=2, cast=int
+)
+AI_WORKER_MAX_ATTEMPTS = config('AI_WORKER_MAX_ATTEMPTS', default=3, cast=int)
+AI_WORKER_LEASE_SECONDS = config('AI_WORKER_LEASE_SECONDS', default=0, cast=int)
+AI_CREDITS_PER_USD = config('AI_CREDITS_PER_USD', default=1000, cast=int)
+AI_COST_MARGIN_MULTIPLIER = config(
+    'AI_COST_MARGIN_MULTIPLIER',
+    default=1.5,
+    cast=float,
+)
+AI_MIN_OPERATION_CHARGE = config('AI_MIN_OPERATION_CHARGE', default=1, cast=int)

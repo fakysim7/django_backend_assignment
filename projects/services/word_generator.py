@@ -1,586 +1,584 @@
-"""
-services/word_generator.py
-
-Генератор .docx из списка блоков JSON.
-Типы блоков (как на фронте): title-page, heading, text, image, table
-
-Структура документа:
-  Страница 1 — титульная (title-page)
-  Страница 2 — Содержание (динамическое, обновляется Word автоматически)
-  Страницы 3+ — контент, H1 = новая страница
-"""
-
 import io
 import logging
 import requests
-import os
 
 from django.conf import settings
-from docx.enum.table import WD_TABLE_ALIGNMENT
+from django.core.files.storage import default_storage
+from docxtpl import DocxTemplate
+from docx.shared import RGBColor
+from urllib.parse import unquote
 from docx import Document
-from docx.shared import Pt, Cm, RGBColor
+from docx.shared import Pt, Cm
 from docx.enum.text import WD_ALIGN_PARAGRAPH, WD_LINE_SPACING
-from docx.enum.table import WD_ROW_HEIGHT_RULE
+from docx.enum.table import WD_CELL_VERTICAL_ALIGNMENT, WD_ROW_HEIGHT_RULE
 from docx.oxml.ns import qn
 from docx.oxml import OxmlElement
 
 logger = logging.getLogger(__name__)
 
 
-# ─────────────────────────────────────────────
-# Стили по ГОСТ 7.32
-# ─────────────────────────────────────────────
+def _fix_styles(doc: Document):
+    for style_name in ["Normal", "Heading 1", "Heading 2", "Heading 3"]:
+        try:    
+            style = doc.styles[style_name]
+            pf = style.paragraph_format
+            pf.line_spacing_rule = WD_LINE_SPACING.SINGLE  
+            pf.line_spacing = 1.0  # Явно фиксируем одинарный интервал
+            pf.space_before = Pt(0)
+            pf.space_after = Pt(0)
+        except KeyError:
+            continue
 
-def _setup_gost_styles(doc: Document):
-    """Настройка глобальных стилей документа по ГОСТ 7.32 / СТП 20-04-2008."""
-    style = doc.styles["Normal"]
-    style.font.name = "Times New Roman"
-    style.font.size = Pt(14)
-    style.font.color.rgb = RGBColor(0, 0, 0)
-    pf = style.paragraph_format
-    pf.line_spacing_rule = WD_LINE_SPACING.ONE_POINT_FIVE
-    pf.first_line_indent = Cm(1.25)
-    pf.space_before      = Pt(0)
-    pf.space_after       = Pt(0)
-    pf.alignment         = WD_ALIGN_PARAGRAPH.JUSTIFY
-
-    sizes = {1: Pt(16), 2: Pt(14), 3: Pt(14)}
-    for i in range(1, 4):
-        h_style = doc.styles[f"Heading {i}"]
-        h_style.font.name        = "Times New Roman"
-        h_style.font.bold        = True
-        h_style.font.color.rgb   = RGBColor(0, 0, 0)
-        h_style.font.size        = sizes[i]
-        h_pf = h_style.paragraph_format
-        h_pf.line_spacing_rule   = WD_LINE_SPACING.ONE_POINT_FIVE
-        h_pf.alignment           = WD_ALIGN_PARAGRAPH.LEFT
-        h_pf.first_line_indent   = Cm(1.25)
-        h_pf.space_before        = Pt(12)
-        h_pf.space_after         = Pt(6)
-        h_pf.keep_with_next      = True
-
-
-# ─────────────────────────────────────────────
-# Утилиты
-# ─────────────────────────────────────────────
-
-def _set_font(run, size_pt: int, bold: bool = False, italic: bool = False,
-              font_name: str = "Times New Roman"):
+def _set_font(run, size_pt, bold=False, italic=False, font_name="Times New Roman"):
     run.font.name = font_name
     run.font.size = Pt(size_pt)
     run.bold = bold
     run.italic = italic
 
+def _setup_page_numbers(doc: Document):
+    section = doc.sections[0]
+    section.different_first_page_header_footer = True
 
-def _fetch_image_bytes(url):
-    """
-    Пытается загрузить изображение. Если URL ведет на свой же сервер,
-    читает файл напрямую из MEDIA_ROOT.
-    """
-    if not url:
-        return None
+    footer = section.footer
+    footer.is_linked_to_previous = False
 
-    try:
-        # Если ссылка ведет на наш медиа-сервер
-        if "/media/" in url:
-            # Извлекаем путь после /media/ (например, uploads/file.png)
-            relative_path = url.split("/media/")[-1]
-            local_path = os.path.join(settings.MEDIA_ROOT, relative_path)
+    for p in footer.paragraphs:
+        p.clear()
 
-            if os.path.exists(local_path):
-                with open(local_path, "rb") as f:
-                    return f.read(), None
+    fp = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
+    fp.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    fp.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    fp.paragraph_format.line_spacing = 1.0
+    fp.paragraph_format.space_before = Pt(0)
+    fp.paragraph_format.space_after = Pt(0)
 
-        # Если это внешний URL (или локальный путь не найден), пробуем скачать
-        # verify=False помогает, если есть проблемы с SSL-сертификатами
-        response = requests.get(url, timeout=5, verify=False)
-        if response.status_code == 200:
-            return response.content, None
+    run = fp.add_run()
+    _set_font(run, 12)
 
-    except Exception as e:
-        print(f"Ошибка загрузки изображения: {e}")
+    fldChar1 = OxmlElement("w:fldChar")
+    fldChar1.set(qn("w:fldCharType"), "begin")
+    run._r.append(fldChar1)
+
+    instrText = OxmlElement("w:instrText")
+    instrText.set(qn("xml:space"), "preserve")
+    instrText.text = "PAGE"
+    run._r.append(instrText)
+
+    fldChar2 = OxmlElement("w:fldChar")
+    fldChar2.set(qn("w:fldCharType"), "end")
+    run._r.append(fldChar2)
+
+    first_footer = section.first_page_footer
+    first_footer.is_linked_to_previous = False
+    if first_footer.paragraphs:
+        first_footer.paragraphs[0].clear()
+
+    # В конце — после всех настроек секции
+    pgNumType = OxmlElement("w:pgNumType")
+    pgNumType.set(qn("w:start"), "1")
+    section._sectPr.append(pgNumType)
+
+
+def _fetch_image_bytes(content, owner=None, project_id=None):
+    stored_file_id = content.get("storage_file_id")
+    if stored_file_id:
+        from storage.models import StoredFile
+        from storage.services import download_stored_file
+
+        stored_file = StoredFile.objects.filter(
+            id=stored_file_id,
+            owner=owner,
+            category="document_images",
+            status=StoredFile.STATUS_UPLOADED,
+            metadata__project_id=str(project_id),
+        ).first() if project_id else None
+        if stored_file is None:
+            return None
+        with download_stored_file(stored_file) as file_handle:
+            return file_handle.read(), stored_file.normalized_filename
+
+    path = content.get("path")
+    url = content.get("url")
+
+    if not path and url and "/media/" in url:
+        try:
+            path = url.split("/media/", 1)[-1]
+            path = path.split("?")[0].split("#")[0]
+            path = unquote(path)
+        except Exception:
+            path = None
+
+    if path:
+        try:
+            with default_storage.open(path, "rb") as file_handle:
+                return file_handle.read(), path
+        except OSError:
+            logger.warning("Legacy document image is unavailable.")
 
     return None
 
 
 def _page_break_into(p):
-    """
-    Вставляет разрыв страницы как run внутрь существующего параграфа p.
-    Не создаёт лишний пустой параграф в начале следующей страницы,
-    в отличие от doc.add_page_break().
-    """
     run = p.add_run()
     br = OxmlElement("w:br")
     br.set(qn("w:type"), "page")
     run._r.append(br)
 
 
-def _add_page_number(doc: Document):
-    """
-    Номер страницы в нижнем колонтитуле со 2-й страницы.
-    Титульная (1-я) — без колонтитула.
-    """
-    section = doc.sections[0]
-    section.different_first_page_header_footer = True
+# ─────────────────────────────────────────────
+# Шаг 1: рендер титульника через docxtpl → BytesIO
+# ─────────────────────────────────────────────
 
-    # Обычный футер (2-я страница и далее)
-    footer = section.footer
-    p = footer.paragraphs[0] if footer.paragraphs else footer.add_paragraph()
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.clear()
-    run = p.add_run()
+def _render_title_via_template(title_content: dict, project_type: str) -> io.BytesIO:
+    template_candidates = [
+        os.path.join(settings.BASE_DIR, 'templates', 'word', 'base_template.docx'),
+        os.path.join(settings.BASE_DIR, 'projects', 'services', 'base_template.docx'),
+    ]
+    template_path = next(
+        (path for path in template_candidates if os.path.isfile(path)),
+        None,
+    )
+    if not template_path:
+        raise FileNotFoundError(
+            "DOCX template not found in templates/word or projects/services"
+        )
+    doc = DocxTemplate(template_path)
 
-    fldChar1 = OxmlElement("w:fldChar")
-    fldChar1.set(qn("w:fldCharType"), "begin")
-    instrText = OxmlElement("w:instrText")
-    instrText.text = "PAGE"
-    fldChar2 = OxmlElement("w:fldChar")
-    fldChar2.set(qn("w:fldCharType"), "separate")
-    fldChar3 = OxmlElement("w:fldChar")
-    fldChar3.set(qn("w:fldCharType"), "end")
+    labels = {
+        "course": "КУРСОВАЯ РАБОТА",
+        "lab": f"ОТЧЕТ ПО ЛАБОРАТОРНОЙ РАБОТЕ №{title_content.get('lab_number', '___')}",
+        "essay": "РЕФЕРАТ",
+        "diplom": "ДИПЛОМНАЯ РАБОТА",
+    }
 
-    run._r.append(fldChar1)
-    run._r.append(instrText)
-    run._r.append(fldChar2)
-    run._r.append(fldChar3)
+    context = {
+        **title_content,
+        "work_type_label": labels.get(project_type, "РАБОТА"),
+        "project_type": project_type,
+        "show_toc": project_type != "lab",
+    }
 
-    # Футер первой страницы — явно пустой
-    first_footer = section.first_page_footer
-    if first_footer.paragraphs:
-        first_footer.paragraphs[0].clear()
+    doc.render(context)
+
+    buf = io.BytesIO()
+    doc.save(buf)
+    buf.seek(0)
+    return buf
 
 
 # ─────────────────────────────────────────────
-# Содержание (динамическое TOC)
+# Шаг 2: открываем отрендеренный docx и добавляем контент
 # ─────────────────────────────────────────────
 
 def _render_dynamic_toc(doc: Document):
-    """
-    Вставляет TOC-поле.
-    - Microsoft Word: обновится автоматически при открытии (updateFields в XML).
-    - LibreOffice: нужно вручную нажать F9 или "Обновить всё".
-    """
-    # Заголовок
     p = doc.add_paragraph()
     p.alignment = WD_ALIGN_PARAGRAPH.CENTER
     p.paragraph_format.first_line_indent = Cm(0)
+    p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    p.paragraph_format.line_spacing = 1.0
     run = p.add_run("СОДЕРЖАНИЕ")
     _set_font(run, 16, bold=True)
 
-    # Параграф с полем TOC
+    normal_style = doc.styles["Normal"]
+    normal_style.font.name = "Times New Roman"
+    normal_style.font.size = Pt(14)
+
+    normal_style.element.rPr.rFonts.set(qn('w:ascii'), 'Times New Roman')
+    normal_style.element.rPr.rFonts.set(qn('w:hAnsi'), 'Times New Roman')
+    normal_style.element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
+    normal_style.element.rPr.rFonts.set(qn('w:cs'), 'Times New Roman')
+
+    try:
+        default_font = doc.styles['Default Paragraph Font']
+        for i in range(1, 4):
+            style_name = f"TOC {i}"
+
+            try:
+                toc_style = doc.styles[style_name]
+            except KeyError:
+                continue
+
+            toc_style.font.name = "Times New Roman"
+            toc_style.font.size = Pt(14)
+
+            pf = toc_style.paragraph_format
+            pf.line_spacing_rule = WD_LINE_SPACING.SINGLE
+            pf.line_spacing = 1.0
+            pf.space_before = Pt(0)
+            pf.space_after = Pt(0)
+
+            toc_style.element.rPr.rFonts.set(qn('w:ascii'), 'Times New Roman')
+            toc_style.element.rPr.rFonts.set(qn('w:hAnsi'), 'Times New Roman')
+            toc_style.element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
+            toc_style.element.rPr.rFonts.set(qn('w:cs'), 'Times New Roman')
+
+    except Exception:
+        pass
+
     paragraph = doc.add_paragraph()
     paragraph.paragraph_format.first_line_indent = Cm(0)
+    paragraph.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    paragraph.paragraph_format.line_spacing = 1.0
     run = paragraph.add_run()
 
-    # begin
     fldChar1 = OxmlElement("w:fldChar")
     fldChar1.set(qn("w:fldCharType"), "begin")
-    fldChar1.set(qn("w:dirty"), "true")   # пометить как «нужно обновить»
+    fldChar1.set(qn("w:dirty"), "true")
     run._r.append(fldChar1)
 
-    # инструкция TOC
     instrText = OxmlElement("w:instrText")
     instrText.set(qn("xml:space"), "preserve")
     instrText.text = ' TOC \\o "1-3" \\h \\z \\u '
     run._r.append(instrText)
 
-    # separate — между инструкцией и placeholder-текстом
     fldChar2 = OxmlElement("w:fldChar")
     fldChar2.set(qn("w:fldCharType"), "separate")
     run._r.append(fldChar2)
 
-    # placeholder — без него некоторые версии Word не рендерят TOC
     placeholder = OxmlElement("w:r")
-    placeholder_rpr = OxmlElement("w:rPr")
-    placeholder_noProof = OxmlElement("w:noProof")
-    placeholder_rpr.append(placeholder_noProof)
-    placeholder.append(placeholder_rpr)
     placeholder_t = OxmlElement("w:t")
     placeholder_t.text = "Обновите содержание: нажмите правой кнопкой → Обновить поле"
     placeholder.append(placeholder_t)
     paragraph._p.append(placeholder)
 
-    # end + разрыв страницы внутри того же параграфа
     run2 = paragraph.add_run()
     fldChar3 = OxmlElement("w:fldChar")
     fldChar3.set(qn("w:fldCharType"), "end")
     run2._r.append(fldChar3)
     _page_break_into(paragraph)
 
-    # Принудительное updateFields через XML settings (надёжнее чем .update_fields)
     settings_element = doc.settings.element
     updateFields = OxmlElement("w:updateFields")
     updateFields.set(qn("w:val"), "true")
     settings_element.append(updateFields)
 
 
-# ─────────────────────────────────────────────
-# Рендереры блоков
-# ─────────────────────────────────────────────
-
-from docx.enum.table import WD_ALIGN_VERTICAL
-
-from docx.enum.text import WD_ALIGN_PARAGRAPH
-from docx.enum.table import WD_ALIGN_VERTICAL, WD_ROW_HEIGHT_RULE
-from docx.shared import Cm, Pt
-from docx.oxml import OxmlElement
-from docx.oxml.ns import qn
-
-def _render_title_page(doc: Document, content: dict):
-    # Динамические данные
-    university = content.get("university", "")
-    department = content.get("department", "__________________________________________")
-    subject    = content.get("subject", "")
-    title      = content.get("title", "")
-    student    = content.get("studentName", "")
-    faculty    = content.get("faculty", "_____")
-    group      = content.get("group", "")
-    studying   = content.get("studying_year", "")
-    teacher    = content.get("teacherName", "")
-    rank       = content.get("jobTitle", "") # канд. экон. наук, доцент
-    city       = content.get("city", "МИНСК")
-    year       = content.get("year", "2026")
-
-    # Основная таблица-каркас (3 строки: верх, центр, низ)
-    table = doc.add_table(rows=3, cols=1)
-    table.autofit = False
-
-    # Убираем границы
-    tbl_pr = table._tbl.tblPr
-    borders = OxmlElement('w:tblBorders')
-    for b in ('top', 'left', 'bottom', 'right', 'insideH', 'insideV'):
-        el = OxmlElement(f'w:{b}')
-        el.set(qn('w:val'), 'nil')
-        borders.append(el)
-    tbl_pr.append(borders)
-
-    # =========================
-    # 🔹 ВЕРХ (ВУЗ)
-    # =========================
-    top = table.cell(0, 0)
-    top.vertical_alignment = WD_ALIGN_VERTICAL.TOP
-
-    p = top.paragraphs[0]
-    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p.paragraph_format.space_after = Pt(0)
-    _set_font(p.add_run(f"МИНИСТЕРСТВО ОБРАЗОВАНИЯ РЕСПУБЛИКИ БЕЛАРУСЬ\n УО «{university.upper()}»"), 12, bold=True)
-
-    p2 = top.add_paragraph()
-    p2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p2.paragraph_format.space_before = Pt(20)
-    _set_font(p2.add_run(f"Кафедра {department}"), 12)
-
-    # =========================
-    # 🔹 ЦЕНТР (ТЕМА И ПОДПИСИ)
-    # =========================
-    mid = table.cell(1, 0)
-    mid.vertical_alignment = WD_ALIGN_VERTICAL.CENTER
-
-    # Заголовок работы
-    p_work = mid.paragraphs[0]
-    p_work.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_font(p_work.add_run("КУРСОВАЯ РАБОТА\n"), 16, bold=True)
-
-    p_subject = mid.add_paragraph()
-    p_subject.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    p_subject.paragraph_format.space_after = Pt(6)
-    _set_font(p_subject.add_run("\tпо дисциплине "), 14)
-    _set_font(p_subject.add_run(f"«{subject}»"), 14, bold=True)
-
-    # 3. Тема (по центру)
-    p_title = mid.add_paragraph()
-    p_title.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    _set_font(p_title.add_run("\tна тему "), 14)
-    _set_font(p_title.add_run(f"«{title}»"), 14, bold=True)
-
-    # Блок подписей (вложенная таблица для выравнивания "по линии")
-    mid.add_paragraph().paragraph_format.space_before = Pt(50)
-    # Создаем таблицу в правой части (2 строки, 3 колонки)
-    # Колонки: 1 - Должность, 2 - Подписи (сдвинутые вниз), 3 - ФИО
-# Создаем таблицу
-    inner = mid.add_table(rows=2, cols=3)
-    
-    # ВАЖНО: Выравнивание самой ТАБЛИЦЫ по правому краю страницы
-    inner.alignment = WD_TABLE_ALIGNMENT.RIGHT 
-    
-    # Отключаем автоподбор, чтобы наши Cm() работали
-    inner.autofit = False 
-
-    # Настройка ширины (суммарно около 15-16 см, чтобы влезло в поля)
-    col_widths = [Cm(8), Cm(4.5), Cm(4.5)]
-    
-    for i, width in enumerate(col_widths):
-        inner.columns[i].width = width
-        # Дополнительно фиксируем ширину каждой ячейки (для надежности в Word)
-        for row in inner.rows:
-            row.cells[i].width = width
-
-    # Применяем вертикальное выравнивание и убираем отступы
-    for row in inner.rows:
-        for cell in row.cells:
-            cell.vertical_alignment = WD_ALIGN_VERTICAL.BOTTOM
-            for p in cell.paragraphs:
-                p.paragraph_format.space_after = Pt(0)
-                p.paragraph_format.line_spacing = 1.0
-
-# --- СТУДЕНТ ---
-    row1 = inner.rows[0].cells
-
-    # Ячейка 1: Студент (Лево)
-    p_st = row1[0].paragraphs[0]
-    p_st.alignment = WD_ALIGN_PARAGRAPH.LEFT
-    _set_font(p_st.add_run(f"Студент\n\t{faculty}, {studying} курс, {group}"), 12)
-
-    # Ячейка 2: Подпись (Центр)
-    p_sig1 = row1[1].paragraphs[0]
-    p_sig1.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    # Используем пробелы или табуляцию в одной строке, чтобы не увеличивать высоту ячейки
-    _set_font(p_sig1.add_run("(подпись)\n\t(дата)"), 8)
-
-    # Ячейка 3: ФИО (Право)
-    p_name1 = row1[2].paragraphs[0]
-    p_name1.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    _set_font(p_name1.add_run(f'{student}'), 12)
-
-    # Устанавливаем высоту строки, чтобы блоки не слипались
-    inner.rows[0].height = Cm(1.2)
-
-
-
-# --- РУКОВОДИТЕЛЬ ---
-    row2 = inner.rows[1].cells
-    # Ячейка 1: Должность
-    p_rep = row2[0].paragraphs[0]
-    p_rep.paragraph_format.space_before = Pt(25)
-    rank_parts = rank.split(",")
-    run = p_rep.add_run("Руководитель\n")
-    for part in rank_parts:
-        run.add_text(f"\n\t{part.strip()}")
-
-    _set_font(run, 12)
-
-    # Ячейка 2: Оценка/Подпись (сдвигаем ниже)
-    p_sig2 = row2[1].paragraphs[0]
-    p_sig2.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    p_sig2.paragraph_format.space_before = Pt(18) # Сдвиг вниз
-    _set_font(p_sig2.add_run("(подпись) (оценка)\n             (дата)"), 8)
-
-    # Ячейка 3: ФИО
-    p_name2 = row2[2].paragraphs[0]
-    p_name2.alignment = WD_ALIGN_PARAGRAPH.RIGHT
-    _set_font(p_name2.add_run(teacher), 12)
-
-    # =========================
-    # 🔹 НИЗ (ГОРОД)
-    # =========================
-    bot = table.cell(2, 0)
-    bot.vertical_alignment = WD_ALIGN_VERTICAL.BOTTOM
-
-    p_bot = bot.paragraphs[0]
-    p_bot.alignment = WD_ALIGN_PARAGRAPH.CENTER
-    _set_font(p_bot.add_run(f"{city.upper()} {year}"), 12)
-
-    # Фиксация высот
-    table.rows[0].height = Cm(4)
-    table.rows[1].height = Cm(17.5)
-    table.rows[2].height = Cm(2)
-    for row in table.rows:
-        row.height_rule = WD_ROW_HEIGHT_RULE.EXACTLY
-
-
 def _render_heading(doc: Document, content: dict):
-    """heading: { level: 1|2|3, text: "..." }
-    Используем встроенный стиль Heading N — заголовки попадают в динамический TOC.
-    H1 по ГОСТ — заглавными буквами.
-    """
     level = content.get("level", 1)
-    text  = content.get("text", "")
+    text = content.get("text", "").strip()
+
     if level == 1:
-        text = text.upper()
-    p = doc.add_paragraph(text, style=f"Heading {level}")
-    # Явно форсируем Times New Roman — стиль Heading может наследовать другой шрифт темы
-    for run in p.runs:
-        run.font.name = "Times New Roman"
+        is_introduction = text.lower() == "введение"
+        text = text.upper() if is_introduction else (text[0].upper() + text[1:]) if text else text
+
+    p = doc.add_paragraph(style=f"Heading {level}")
+    run = p.add_run(text)
+
+    is_introduction = text.lower() == "введение"
+
+    if is_introduction:
+        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        p.paragraph_format.first_line_indent = Cm(0)
+    else:
+        p.alignment = WD_ALIGN_PARAGRAPH.LEFT
+
+    # НАСТРОЙКА ШРИФТА
+    run.font.name = "Times New Roman"
+    run.font.size = Pt(14)
+    run.font.bold = True
+    run.font.color.rgb = RGBColor(0, 0, 0)
+
+    # Одинарный интервал внутри самого заголовка
+    p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    p.paragraph_format.line_spacing = 1.0
+
+    # Фикс шрифтов
+    run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
+    run._element.rPr.rFonts.set(qn('w:ascii'), 'Times New Roman')
+    run._element.rPr.rFonts.set(qn('w:hAnsi'), 'Times New Roman')
+
+    # Интервалы до и после заголовка
+    if level == 1:
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(14)
+    else:
+        p.paragraph_format.space_before = Pt(14)
+        p.paragraph_format.space_after = Pt(14)
 
 
 def _render_text(doc: Document, content: dict):
-    """text: { text: "..." } — стиль Normal (полуторный, отступ 1.25, по ширине)."""
     raw = content.get("text", "")
-    for line in raw.split("\n"):
-        if line.strip():
-            doc.add_paragraph(line)
+    lines = raw.split("\n")
+
+    for line in lines:
+        clean_line = line.strip()
+        p = doc.add_paragraph(clean_line)
+
+        run = p.runs[0] if p.runs else p.add_run()
+        _set_font(run, 14, font_name="Times New Roman")
+
+        p.alignment = WD_ALIGN_PARAGRAPH.JUSTIFY
+        
+        # Гарантированный одинарный интервал
+        p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+        p.paragraph_format.line_spacing = 1.0
+        
+        p.paragraph_format.space_before = Pt(0)
+        p.paragraph_format.space_after = Pt(0)
+        if clean_line:
+            p.paragraph_format.first_line_indent = Cm(1.25)
 
 
-def _render_image(doc: Document, content: dict, img_counter: list):
-    url     = content.get("url", "")
+def _keep_together(p):
+    pPr = p._p.get_or_add_pPr()
+    kwn = OxmlElement("w:keepNext")
+    pPr.append(kwn)
+    kl = OxmlElement("w:keepLines")
+    pPr.append(kl)
+
+
+def _render_image(
+    doc: Document, content: dict, img_counter: list, owner=None, project_id=None
+):
+    url = content.get("url", "")
     caption = content.get("caption", "")
+    source = content.get("source", "")
     img_counter[0] += 1
     num = img_counter[0]
 
-    # 1. Пытаемся получить байты
-    result = _fetch_image_bytes(url)
-
+    result = _fetch_image_bytes(content, owner=owner, project_id=project_id)
     if result is None:
         p = doc.add_paragraph(f"[Изображение {num} недоступно]")
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
         return
 
     img_bytes = result[0]
-
     try:
-        # 2. Вставка самого изображения
         p = doc.add_paragraph()
         p.alignment = WD_ALIGN_PARAGRAPH.CENTER
-        # Убираем все отступы, чтобы картинка была строго по центру
         p.paragraph_format.first_line_indent = Cm(0)
-        p.paragraph_format.left_indent = Cm(0)
         p.paragraph_format.space_before = Pt(12)
         p.paragraph_format.space_after = Pt(0)
+        p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+        p.paragraph_format.line_spacing = 1.0
+        _keep_together(p)  
+        p.add_run().add_picture(io.BytesIO(img_bytes), width=Cm(14))
 
-        run = p.add_run()
-        run.add_picture(io.BytesIO(img_bytes), width=Cm(14))
-
-        # 3. Добавление подписи (ГОСТ)
-        if caption:
+        if caption or source:
             cap_p = doc.add_paragraph()
             cap_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
             cap_p.paragraph_format.first_line_indent = Cm(0)
             cap_p.paragraph_format.space_before = Pt(6)
-            cap_p.paragraph_format.space_after  = Pt(12)
+            cap_p.paragraph_format.space_after = Pt(0)
+            cap_p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+            cap_p.paragraph_format.line_spacing = 1.0
+            _keep_together(cap_p)  
+            
+            # Подпись к рисунку делается полужирной (bold=True)
+            _set_font(cap_p.add_run(f"Рисунок {num} — {caption}"), 12, bold=True)
 
-            # "Рисунок N — " пишем обычным шрифтом
-            run_prefix = cap_p.add_run(f"Рисунок {num} — ")
-            _set_font(run_prefix, 12)
-
-            # Название рисунка пишем курсивом
-            run_text = cap_p.add_run(caption)
-            _set_font(run_text, 12, italic=True)
-
+        if source:
+            src_p = doc.add_paragraph()
+            src_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+            src_p.paragraph_format.first_line_indent = Cm(0)
+            src_p.paragraph_format.space_before = Pt(2)
+            src_p.paragraph_format.space_after = Pt(12)
+            src_p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+            src_p.paragraph_format.line_spacing = 1.0
+            
+            # Примечание остается курсивным
+            _set_font(src_p.add_run(f"Примечание — Источник: {source}"), 12, italic=True)
     except Exception as e:
-        p = doc.add_paragraph(f"[Ошибка обработки формата изображения {num}]")
-        p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+        logger.error(f"Ошибка вставки изображения {num}: {e}")
+        doc.add_paragraph(f"[Ошибка обработки изображения {num}]")
+
+
+def _set_row_min_height(row, height_twips=300):
+    trPr = row._tr.get_or_add_trPr()
+    for old in trPr.findall(qn('w:trHeight')):
+        trPr.remove(old)
+    trHeight = OxmlElement('w:trHeight')
+    trHeight.set(qn('w:val'), str(height_twips))
+    trHeight.set(qn('w:hRule'), 'exact')
+    trPr.append(trHeight)
+
+
+def _set_table_borders(table):
+    tbl = table._tbl
+    tblPr = tbl.tblPr
+
+    borders = OxmlElement('w:tblBorders')
+
+    for border_name in ['top', 'left', 'bottom', 'right', 'insideH', 'insideV']:
+        border = OxmlElement(f'w:{border_name}')
+        border.set(qn('w:val'), 'single')
+        border.set(qn('w:sz'), '4')
+        border.set(qn('w:space'), '0')
+        border.set(qn('w:color'), '000000')
+        borders.append(border)
+
+    tblPr.append(borders)
+
 
 def _render_table(doc: Document, content: dict):
-    """
-    table: { 
-        id: "1", 
-        title: "Название таблицы", 
-        rows: N, 
-        cols: M, 
-        data: [...] 
-    }
-    """
-    table_id = content.get("id", "1")
-    table_title = content.get("naming", "")
+    table_title = content.get("naming", "Без названия")
     rows_count = content.get("rows", 1)
     cols_count = content.get("cols", 1)
     data = content.get("data", [])
-    table_note = content.get("source", "Источник: собственная разработка").strip()
+    table_note = content.get("source", "").strip()
 
-    # 1. Добавляем подпись таблицы (над таблицей по ГОСТ)
+    # Заголовок таблицы
     p = doc.add_paragraph()
-    p.paragraph_format.space_after = Pt(6)
-    p.paragraph_format.keep_with_next = True  # Чтобы подпись не оторвалась от таблицы
-    run = p.add_run(f"Таблица {table_id} — {table_title}")
-    _set_font(run, size_pt=12, bold=True)
+    p.paragraph_format.space_after = Pt(0)
+    p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+    p.paragraph_format.line_spacing = 1.0
+    run = p.add_run(f"Таблица — {table_title}")
+    _set_font(run, 12, bold=True)
 
-    # 2. Создаем таблицу
     table = doc.add_table(rows=rows_count, cols=cols_count)
-    table.style = "Table Grid"
-    
-    # Свойство: не разрешать разрыв строк внутри (чтобы строка не резалась пополам)
-    for row in table.rows:
-        tr = row._tr
-        trPr = tr.get_or_add_trPr()
-        cantSplit = OxmlElement('w:cantSplit')
-        cantSplit.set(qn('w:val'), 'true')
-        trPr.append(cantSplit)
+    _set_table_borders(table)
 
     for r in range(rows_count):
         row_obj = table.rows[r]
-        
-        # Настройка заголовка (повторение на каждой странице)
-        if r == 0:
-            trPr = row_obj._tr.get_or_add_trPr()
-            tblHeader = OxmlElement('w:tblHeader')
-            trPr.append(tblHeader)
+        _set_row_min_height(row_obj)
 
         for c in range(cols_count):
             cell = table.cell(r, c)
             idx = r * cols_count + c
             cell.text = str(data[idx]) if idx < len(data) else ""
 
-            # Стилизация текста в ячейках
+            cell.vertical_alignment = WD_CELL_VERTICAL_ALIGNMENT.CENTER
+
             for para in cell.paragraphs:
-                para.paragraph_format.first_line_indent = Cm(0)
-                para.paragraph_format.space_before = Pt(2)
-                para.paragraph_format.space_after = Pt(2)
+                para.alignment = WD_ALIGN_PARAGRAPH.CENTER
+                para.paragraph_format.left_indent = Cm(0)
+                para.paragraph_format.right_indent = Cm(0)
+
+                # Одинарный интервал внутри ячеек таблицы
+                para.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE
+                para.paragraph_format.line_spacing = 1.0
+
+                para.paragraph_format.space_before = Pt(0)
+                para.paragraph_format.space_after = Pt(0)
+
                 for run in para.runs:
+                    run.font.name = "Times New Roman"
                     run.font.size = Pt(12)
-                    if r == 0:
-                        run.bold = True
+                    run.font.bold = False
+                    run.font.color.rgb = RGBColor(0, 0, 0)
 
-            # Цвет заливки для заголовка
-            if r == 0:
-                shading = OxmlElement("w:shd")
-                shading.set(qn("w:val"), "clear")
-                shading.set(qn("w:color"), "auto")
-                shading.set(qn("w:fill"), "D9D9D9")
-                cell._tc.get_or_add_tcPr().append(shading)
+                    run._element.rPr.rFonts.set(qn('w:ascii'), 'Times New Roman')
+                    run._element.rPr.rFonts.set(qn('w:hAnsi'), 'Times New Roman')
+                    run._element.rPr.rFonts.set(qn('w:eastAsia'), 'Times New Roman')
+
+    # Запрещаем разрыв строки
+    for row in table.rows:
+        trPr = row._tr.get_or_add_trPr()
+        cs = OxmlElement('w:cantSplit')
+        cs.set(qn('w:val'), 'true')
+        trPr.append(cs)
+
+    # Примечание
+    note_text = table_note if table_note else "Примечание — Источник: Собственная разработка"
+    note_p = doc.add_paragraph()
+    note_p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    note_p.paragraph_format.line_spacing_rule = WD_LINE_SPACING.SINGLE  
+    note_p.paragraph_format.line_spacing = 1.0                         
+    note_p.paragraph_format.space_after = Pt(12)
+    _set_font(note_p.add_run(note_text), 10)
 
 
-    if table_note:
-            # Добавляем параграф для примечания
-            note_p = doc.add_paragraph()
-            note_p.alignment = WD_ALIGN_PARAGRAPH.CENTER  # Без абзацного отступа
-            note_p.paragraph_format.space_before = Pt(2)       # Почти вплотную к таблице
-            note_p.paragraph_format.space_after = Pt(12)      # Отступ до следующего текста
-            
-            # Просто вставляем текст как он есть на фронте
-            run = note_p.add_run(table_note)
-            run.font.size = Pt(12) 
-    else:
-        # Если примечания нет, просто делаем стандартный отступ после таблицы
-        last_p = doc.add_paragraph()
-        last_p.paragraph_format.space_before = Pt(12)
-        last_p.paragraph_format.line_spacing = Pt(1)
+def _render_chart(doc: Document, content: dict):
+    title = content.get("title") or "График"
+    series = content.get("series", [])
+    if not isinstance(series, list) or not series:
+        raise ValueError("Chart block requires at least one data series")
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _set_font(p.add_run(title), 12, bold=True)
+    if content.get("description"):
+        doc.add_paragraph(str(content["description"]))
+
+    categories = []
+    for item in series:
+        if not isinstance(item, dict) or not isinstance(item.get("points"), list):
+            raise ValueError("Chart series has an invalid shape")
+        for point in item["points"]:
+            if isinstance(point, dict) and point.get("x") not in categories:
+                categories.append(point.get("x"))
+
+    table = doc.add_table(rows=1, cols=len(series) + 1)
+    _set_table_borders(table)
+    table.cell(0, 0).text = str(content.get("xAxis") or "Категория")
+    for index, item in enumerate(series, start=1):
+        table.cell(0, index).text = str(item.get("name") or f"Ряд {index}")
+
+    for category in categories:
+        cells = table.add_row().cells
+        cells[0].text = str(category)
+        for column, item in enumerate(series, start=1):
+            point = next(
+                (
+                    value
+                    for value in item["points"]
+                    if isinstance(value, dict) and value.get("x") == category
+                ),
+                None,
+            )
+            cells[column].text = "" if point is None else str(point.get("y", ""))
+    if content.get("isDemonstration"):
+        note = doc.add_paragraph("Демонстрационные данные — не фактическая статистика.")
+        note.alignment = WD_ALIGN_PARAGRAPH.CENTER
+
+
+def _render_diagram(doc: Document, content: dict):
+    title = content.get("title") or "Диаграмма процесса"
+    nodes = content.get("nodes", [])
+    edges = content.get("edges", [])
+    if not isinstance(nodes, list) or not isinstance(edges, list):
+        raise ValueError("Diagram block requires nodes and edges")
+    labels = {
+        node.get("id"): node.get("label", "")
+        for node in nodes
+        if isinstance(node, dict)
+    }
+
+    p = doc.add_paragraph()
+    p.alignment = WD_ALIGN_PARAGRAPH.CENTER
+    _set_font(p.add_run(title), 12, bold=True)
+    table = doc.add_table(rows=1, cols=2)
+    _set_table_borders(table)
+    table.cell(0, 0).text = "Этап"
+    table.cell(0, 1).text = "Переход"
+    for node in nodes:
+        if isinstance(node, dict):
+            row = table.add_row().cells
+            row[0].text = str(node.get("label", ""))
+            outgoing = [
+                f"{labels.get(edge.get('to'), edge.get('to'))}"
+                + (f" ({edge['label']})" if edge.get("label") else "")
+                for edge in edges
+                if isinstance(edge, dict) and edge.get("from") == node.get("id")
+            ]
+            row[1].text = " → ".join(outgoing)
 
 
 # ─────────────────────────────────────────────
 # Точка входа
 # ─────────────────────────────────────────────
 
-def generate_docx_from_blocks(blocks: list) -> Document:
-    doc = Document()
-    _setup_gost_styles(doc)
-
-    # Поля по ГОСТ: левое 30мм, правое 15мм, верх/низ 20мм
-    section = doc.sections[0]
-    section.left_margin   = Cm(3)
-    section.right_margin  = Cm(1.5)
-    section.top_margin    = Cm(2)
-    section.bottom_margin = Cm(2)
-
-    _add_page_number(doc)
-
-    # ── Страница 1: Титульная ──
+def generate_docx_from_blocks(
+    blocks: list, project_type: str = "course", owner=None, project_id=None
+) -> io.BytesIO:
     title_block = next((b for b in blocks if b.get("type") == "title-page"), None)
-    if title_block:
-        _render_title_page(doc, title_block.get("content", {}))
-        # Переносим разрыв СЮДА, после таблицы, чтобы не ломать высоту строк
-        # doc.add_page_break()
+    title_content = title_block.get("content", {}) if title_block else {}
 
-    # ── Страница 2: Содержание ──
-    _render_dynamic_toc(doc)
+    rendered_buf = _render_title_via_template(title_content, project_type)
 
-    # ── Страницы 3+: Контент ──
-    # ... (остальной код без изменений)
+    doc = Document(rendered_buf)
+    _fix_styles(doc)
+    _setup_page_numbers(doc)
+
+    if project_type != "lab":
+        _render_dynamic_toc(doc)
+
     content_blocks = [b for b in blocks if b.get("type") != "title-page"]
     img_counter = [0]
     last_paragraph = [None]
 
     for i, block in enumerate(content_blocks):
-        b_type  = block.get("type")
+        b_type = block.get("type")
         content = block.get("content", {})
 
         if b_type == "heading" and content.get("level") == 1 and i > 0:
@@ -598,12 +596,27 @@ def generate_docx_from_blocks(blocks: list) -> Document:
                 _render_text(doc, content)
                 last_paragraph[0] = doc.paragraphs[-1]
             elif b_type == "image":
-                _render_image(doc, content, img_counter)
+                _render_image(
+                    doc,
+                    content,
+                    img_counter,
+                    owner=owner,
+                    project_id=project_id,
+                )
                 last_paragraph[0] = doc.paragraphs[-1]
             elif b_type == "table":
                 _render_table(doc, content)
                 last_paragraph[0] = doc.paragraphs[-1]
+            elif b_type == "chart":
+                _render_chart(doc, content)
+                last_paragraph[0] = doc.paragraphs[-1]
+            elif b_type == "diagram":
+                _render_diagram(doc, content)
+                last_paragraph[0] = doc.paragraphs[-1]
         except Exception as e:
             logger.error("Ошибка при рендере блока %s: %s", b_type, e)
 
-    return doc
+    output = io.BytesIO()
+    doc.save(output)
+    output.seek(0)
+    return output

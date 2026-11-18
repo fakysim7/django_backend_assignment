@@ -1,7 +1,10 @@
 from django.urls import path
-from .views import register, login
+from .views import register, login, logout, profile, google_auth
 
 urlpatterns = [
-    path('api/register/', register),
-    path('api/login/', login),
+    path('register/', register, name='register'),
+    path('login/', login, name='login'),
+    path('logout/', logout, name='logout'),
+    path('profile/', profile, name='profile'),
+    path('google/', google_auth, name='google_auth'),
 ]

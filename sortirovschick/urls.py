@@ -15,7 +15,7 @@ Including another URLconf
     2. Add a URL to urlpatterns:  path('blog/', include('blog.urls'))
 """
 from django.contrib import admin
-from main.views import login, register, logout
+from main.views import login, register, logout, google_auth, me
 from projects.views import ProjectViewSet, upload_image, download_project_docx
 from rest_framework import permissions
 from drf_yasg.views import get_schema_view
@@ -45,12 +45,23 @@ urlpatterns = [
     path('api/register/', register),
     path('api/login/', login),
     path('api/logout/', logout),
+    path('api/google_auth/', google_auth),
+    path('api/me/', me, name='api-me'),
+    path('google/', google_auth),
+
+
+    path('me/', me, name='me'),
 
     # refresh
     path('api/token/refresh/', CustomTokenRefreshView.as_view()),
 
     # projects
     path('api/', include(router.urls)),
+    path('api/', include('support.urls')),
+    path('api/', include('notifications.urls')),
+    path('api/storage/', include('storage.urls')),
+    path('api/ai/', include('ai_pipeline.urls')),
+    path('api/admin/', include('platform_admin.urls')),
     path('api/upload_image/', upload_image),
 
     # create .docx
